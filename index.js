@@ -29,22 +29,25 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GAS_URL = process.env.GAS_URL;
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID;
 
-// 未確定の追加候補セッションを保持するメモリマップ
-const draftSessions = new Map();
-
 client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
-// ボタンコンポーネントを生成するヘルパー関数
+// ボタンコンポーネントを構築するヘルパー関数（CustomIDに品目リストを直接保持）
 function buildDraftComponents(items) {
   const rows = [];
   let currentRow = new ActionRowBuilder();
 
-  // ① 削除用ボタン
+  // アイテム文字列（カンマ区切り）
+  const itemsStr = items.join(',');
+
+  // ① 各アイテムの削除ボタン（最大20個）
   items.slice(0, 20).forEach((itemName, index) => {
+    // CustomID形式: draft_remove_[インデックス]_[カンマ区切りのリスト]
+    const customId = `df_rm_${index}_${itemsStr}`;
+
     const button = new ButtonBuilder()
-      .setCustomId(`draft_remove_${index}`)
+      .setCustomId(customId.substring(0, 100)) // DiscordのID長制限(100文字)対策
       .setLabel(`❌ ${itemName}`)
       .setStyle(ButtonStyle.Secondary);
 
@@ -57,13 +60,14 @@ function buildDraftComponents(items) {
   });
 
   // ② 確定・キャンセルボタン
+  const confirmCustomId = `df_cfm_${itemsStr}`.substring(0, 100);
   const confirmButton = new ButtonBuilder()
-    .setCustomId('draft_confirm')
+    .setCustomId(confirmCustomId)
     .setLabel('✅ 決定してリストに追加')
     .setStyle(ButtonStyle.Success);
 
   const cancelButton = new ButtonBuilder()
-    .setCustomId('draft_cancel')
+    .setCustomId('df_cancel')
     .setLabel('✖️ キャンセル')
     .setStyle(ButtonStyle.Danger);
 
@@ -101,7 +105,7 @@ client.on('messageCreate', async (message) => {
 
     const json = await response.json();
 
-    // 【1】「リスト」取得時のレスポンス（チェック削除 & 全削除ボタン）
+    // 【1】「リスト」取得時
     if (userText === "リスト" && json.items) {
       if (json.items.length === 0) {
         await message.reply(json.reply);
@@ -143,7 +147,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【2】「全削除」などのコマンド実行時
+    // 【2】「全削除」などのコマンド時
     if (userText === "全削除" || userText === "全部買った" || userText.includes("すべてを消したい")) {
       if (json.reply) {
         await message.reply(json.reply);
@@ -151,15 +155,13 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【3】AIによる追加候補プレビュー（ボタン付き）
+    // 【3】AI候補プレビュー表示
     if (json.items && json.items.length > 0) {
       const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
 
       const components = buildDraftComponents(json.items);
-      const sentMessage = await message.reply({ content: contentText, components: components });
-
-      draftSessions.set(sentMessage.id, json.items);
+      await message.reply({ content: contentText, components: components });
     }
 
   } catch (error) {
@@ -168,30 +170,35 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// ボタンがクリックされたときの処理
+// ボタンクリックの処理
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
   const customId = interaction.customId;
-  const messageId = interaction.message.id;
 
   // A. 候補編集のボタン処理
-  if (customId.startsWith('draft_')) {
-    const items = draftSessions.get(messageId);
-
-    if (!items) {
-      await interaction.reply({ content: '⚠️ セッションの有効期限が切れているか、すでに処理済みです。', ephemeral: true });
+  if (customId.startsWith('df_')) {
+    
+    // キャンセル
+    if (customId === 'df_cancel') {
+      await interaction.update({
+        content: '✖️ 追加をキャンセルしました。',
+        components: []
+      });
       return;
     }
 
-    // 個別除外
-    if (customId.startsWith('draft_remove_')) {
-      const removeIndex = parseInt(customId.replace('draft_remove_', ''), 10);
+    // 個別除外 (df_rm_[index]_[items])
+    if (customId.startsWith('df_rm_')) {
+      const parts = customId.split('_');
+      const removeIndex = parseInt(parts[2], 10);
+      const itemsStr = parts.slice(3).join('_');
+      let items = itemsStr ? itemsStr.split(',') : [];
+
+      // 対象アイテムを除外
       items.splice(removeIndex, 1);
-      draftSessions.set(messageId, items);
 
       if (items.length === 0) {
-        draftSessions.delete(messageId);
         await interaction.update({
           content: '❌ 追加候補がすべて除外されたため、追加をキャンセルしました。',
           components: []
@@ -207,19 +214,12 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // キャンセル
-    if (customId === 'draft_cancel') {
-      draftSessions.delete(messageId);
-      await interaction.update({
-        content: '✖️ 追加をキャンセルしました。',
-        components: []
-      });
-      return;
-    }
-
-    // 決定して一括追加
-    if (customId === 'draft_confirm') {
+    // 決定して一括追加 (df_cfm_[items])
+    if (customId.startsWith('df_cfm_')) {
       await interaction.deferUpdate();
+
+      const itemsStr = customId.replace('df_cfm_', '');
+      const items = itemsStr ? itemsStr.split(',') : [];
 
       try {
         const finalItemsText = items.join(', ');
@@ -232,8 +232,6 @@ client.on('interactionCreate', async (interaction) => {
             action: "confirm_add"
           })
         });
-
-        draftSessions.delete(messageId);
 
         const addedListText = items.map(i => `・**${i}**`).join('\n');
         await interaction.editReply({
