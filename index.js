@@ -112,7 +112,7 @@ function buildCurrentListComponents(items) {
   return rows;
 }
 
-// メッセージ本文から「・」で始まる行のアイテム名を確実にパースする関数
+// メッセージ本文から「・」で始まる行のアイテム名をパースする関数
 function parseItemsFromContent(content) {
   const lines = content.split('\n');
   const items = [];
@@ -120,7 +120,6 @@ function parseItemsFromContent(content) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed.startsWith('・')) {
-      // 「・」を除去し、太字装飾（**）も除去
       const cleanName = trimmed.replace(/^・\s*/, '').replace(/\*\*/g, '').trim();
       if (cleanName) {
         items.push(cleanName);
@@ -191,7 +190,7 @@ client.on('interactionCreate', async (interaction) => {
   // A. 候補編集・確定のボタン処理
   if (customId.startsWith('df_')) {
     
-    // キャンセル
+    // A-1. キャンセル
     if (customId === 'df_cancel') {
       await interaction.update({
         content: '✖️ 追加をキャンセルしました。',
@@ -200,7 +199,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 個別除外
+    // A-2. 個別除外
     if (customId.startsWith('df_rm_')) {
       const removeIndex = parseInt(customId.replace('df_rm_', ''), 10);
       
@@ -223,14 +222,18 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 決定して一括追加
+    // A-3. 決定して一括追加
     if (customId === 'df_confirm') {
-      await interaction.deferUpdate();
+      // 候補メッセージ自体のボタンを消して「追加中…」にする
+      await interaction.update({
+        content: interaction.message.content + '\n\n⏳ **スプレッドシートに追加中...**',
+        components: []
+      });
 
       const currentItems = parseItemsFromContent(interaction.message.content);
 
       if (currentItems.length === 0) {
-        await interaction.followUp({ content: '⚠️ 追加するアイテムが見つかりませんでした。', ephemeral: true });
+        await interaction.followUp({ content: '⚠️ 追加するアイテムが見つかりませんでした。' });
         return;
       }
 
@@ -249,55 +252,60 @@ client.on('interactionCreate', async (interaction) => {
         const json = await response.json();
         const components = buildCurrentListComponents(json.items);
 
-        await interaction.editReply({
+        // 新しいメッセージとして完了通知＆消去用ボタン付きリストを返信する
+        await interaction.followUp({
           content: json.reply,
           components: components
         });
       } catch (error) {
         console.error('確定保存エラー:', error);
-        await interaction.followUp({ content: '⚠️ リストへの追加に失敗しました。', ephemeral: true });
+        await interaction.followUp({ content: '⚠️ リストへの追加に失敗しました。' });
       }
       return;
     }
   }
 
   // B. リスト個別チェック削除 / 全削除
-  await interaction.deferUpdate();
-
-  let sendText = "";
-  let actionType = "delete";
-
-  if (customId === 'clear_all') {
-    sendText = "全削除";
-    actionType = undefined;
-  } else if (customId.startsWith('delete_')) {
-    sendText = customId.replace('delete_', '');
-  } else {
-    return;
-  }
-
-  try {
-    const response = await fetch(GAS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: sendText,
-        action: actionType
-      })
+  if (customId.startsWith('delete_') || customId === 'clear_all') {
+    // 処理中表示に更新して重複タップを防止
+    await interaction.update({
+      content: interaction.message.content + '\n⏳ **更新中...**',
+      components: []
     });
 
-    const json = await response.json();
+    let sendText = "";
+    let actionType = "delete";
 
-    if (json.items) {
-      const components = buildCurrentListComponents(json.items);
-      await interaction.followUp({ content: json.reply, components: components });
+    if (customId === 'clear_all') {
+      sendText = "全削除";
+      actionType = undefined;
     } else {
-      await interaction.followUp({ content: json.reply });
+      sendText = customId.replace('delete_', '');
     }
 
-  } catch (error) {
-    console.error('ボタン処理エラー:', error);
-    await interaction.followUp({ content: '⚠️ 処理に失敗しました。', ephemeral: true });
+    try {
+      const response = await fetch(GAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: sendText,
+          action: actionType
+        })
+      });
+
+      const json = await response.json();
+
+      if (json.items) {
+        const components = buildCurrentListComponents(json.items);
+        await interaction.followUp({ content: json.reply, components: components });
+      } else {
+        await interaction.followUp({ content: json.reply });
+      }
+
+    } catch (error) {
+      console.error('ボタン処理エラー:', error);
+      await interaction.followUp({ content: '⚠️ 処理に失敗しました。' });
+    }
   }
 });
 
