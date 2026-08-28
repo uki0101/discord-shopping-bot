@@ -13,7 +13,9 @@ const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Bot is running!');
-}).listen(PORT);
+}).listen(PORT, () => {
+  console.log(`Web server running on port ${PORT}`);
+});
 
 const client = new Client({
   intents: [
@@ -58,20 +60,35 @@ client.on('messageCreate', async (message) => {
       const rows = [];
       let currentRow = new ActionRowBuilder();
 
-      // Discordのボタン上限：1行5個まで、全体で最大25個（5行）
-      json.items.slice(0, 25).forEach((itemName, index) => {
+      // 各アイテムの緑色削除ボタン（最大24個）
+      const displayItems = json.items.slice(0, 24);
+      displayItems.forEach((itemName, index) => {
         const button = new ButtonBuilder()
-          .setCustomId(`delete_${itemName}`) // ボタンにアイテム名を埋め込む
+          .setCustomId(`delete_${itemName}`)
           .setLabel(`✔️ ${itemName}`)
           .setStyle(ButtonStyle.Success);
 
         currentRow.addComponents(button);
 
-        if (currentRow.components.length === 5 || index === json.items.length - 1) {
+        if (currentRow.components.length === 5) {
           rows.push(currentRow);
           currentRow = new ActionRowBuilder();
         }
       });
+
+      // 最後に赤色の「全削除」ボタンを追加
+      const clearAllButton = new ButtonBuilder()
+        .setCustomId('clear_all')
+        .setLabel('🗑️ 全削除')
+        .setStyle(ButtonStyle.Danger);
+
+      if (currentRow.components.length < 5) {
+        currentRow.addComponents(clearAllButton);
+        rows.push(currentRow);
+      } else {
+        const lastRow = new ActionRowBuilder().addComponents(clearAllButton);
+        rows.push(lastRow);
+      }
 
       await message.reply({ content: json.reply, components: rows });
     } else if (json.reply) {
@@ -87,30 +104,35 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
-  // ボタンIDから削除対象の品名を取得 (`delete_牛乳` -> `牛乳`)
-  if (interaction.customId.startsWith('delete_')) {
-    const targetItem = interaction.customId.replace('delete_', '');
+  await interaction.deferUpdate(); // 処理中アニメーション
 
-    await interaction.deferUpdate(); // 処理中アニメーション
+  let sendText = "";
+  let actionType = "delete";
 
-    try {
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: targetItem,
-          action: "delete"
-        })
-      });
+  if (interaction.customId === 'clear_all') {
+    sendText = "全削除";
+    actionType = undefined;
+  } else if (interaction.customId.startsWith('delete_')) {
+    sendText = interaction.customId.replace('delete_', '');
+  } else {
+    return;
+  }
 
-      const json = await response.json();
+  try {
+    const response = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: sendText,
+        action: actionType
+      })
+    });
 
-      // ボタンを押したメッセージに完了の返信を送る
-      await interaction.followUp({ content: json.reply });
-    } catch (error) {
-      console.error('ボタン処理エラー:', error);
-      await interaction.followUp({ content: '⚠️ 削除処理に失敗しました。', ephemeral: true });
-    }
+    const json = await response.json();
+    await interaction.followUp({ content: json.reply });
+  } catch (error) {
+    console.error('ボタン処理エラー:', error);
+    await interaction.followUp({ content: '⚠️ 処理に失敗しました。', ephemeral: true });
   }
 });
 
