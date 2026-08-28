@@ -1,6 +1,17 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const fetch = require('node-fetch');
+const http = require('http');
 
+// Renderのポートスキャン（タイムアウト）を回避するためのダミーWebサーバー
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running!');
+}).listen(PORT, () => {
+  console.log(`Web server running on port ${PORT}`);
+});
+
+// Discord Bot 本体
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -18,20 +29,15 @@ client.on('ready', () => {
 });
 
 client.on('messageCreate', async (message) => {
-  // Bot自身の発言は無視
   if (message.author.bot) return;
-
-  // チャンネル制限がある場合、一致しないものは無視
   if (ALLOWED_CHANNEL_ID && message.channel.id !== ALLOWED_CHANNEL_ID) return;
 
   const userText = message.content.trim();
   if (!userText) return;
 
-  // 入力されたら即座に「タイピング中...」を表示してリアルタイム感を演出
   await message.channel.sendTyping();
 
   try {
-    // GASへ転送
     const response = await fetch(GAS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
