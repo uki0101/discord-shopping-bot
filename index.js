@@ -38,7 +38,6 @@ function buildDraftComponents(items) {
   const rows = [];
   let currentRow = new ActionRowBuilder();
 
-  // ① 各アイテムの削除ボタン（ボタン内にはインデックス番号のみ保持して100文字制限を回避）
   items.slice(0, 20).forEach((itemName, index) => {
     const button = new ButtonBuilder()
       .setCustomId(`df_rm_${index}`)
@@ -53,7 +52,6 @@ function buildDraftComponents(items) {
     }
   });
 
-  // ② 確定・キャンセルボタン
   const confirmButton = new ButtonBuilder()
     .setCustomId('df_confirm')
     .setLabel('✅ 決定してリストに追加')
@@ -114,11 +112,22 @@ function buildCurrentListComponents(items) {
   return rows;
 }
 
-// メッセージ本文から「・**品名**」のリストを抽出するヘルパー関数
+// メッセージ本文から「・」で始まる行のアイテム名を確実にパースする関数
 function parseItemsFromContent(content) {
-  const matches = content.match(/・\*\*(.*?)\*\*/g);
-  if (!matches) return [];
-  return matches.map(m => m.replace(/・\*\*|\*\*/g, '').trim());
+  const lines = content.split('\n');
+  const items = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('・')) {
+      // 「・」を除去し、太字装飾（**）も除去
+      const cleanName = trimmed.replace(/^・\s*/, '').replace(/\*\*/g, '').trim();
+      if (cleanName) {
+        items.push(cleanName);
+      }
+    }
+  }
+  return items;
 }
 
 // チャットメッセージの処理
@@ -195,7 +204,6 @@ client.on('interactionCreate', async (interaction) => {
     if (customId.startsWith('df_rm_')) {
       const removeIndex = parseInt(customId.replace('df_rm_', ''), 10);
       
-      // 現在のメッセージ本文から候補一覧を解析
       let currentItems = parseItemsFromContent(interaction.message.content);
       currentItems.splice(removeIndex, 1);
 
@@ -215,15 +223,14 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // 決定して一括追加（そのまま全追加もOK）
+    // 決定して一括追加
     if (customId === 'df_confirm') {
       await interaction.deferUpdate();
 
-      // メッセージ本文から全アイテムをパース（削っていない場合も含む）
       const currentItems = parseItemsFromContent(interaction.message.content);
 
       if (currentItems.length === 0) {
-        await interaction.followUp({ content: '⚠️ 追加するアイテムがありません。', ephemeral: true });
+        await interaction.followUp({ content: '⚠️ 追加するアイテムが見つかりませんでした。', ephemeral: true });
         return;
       }
 
