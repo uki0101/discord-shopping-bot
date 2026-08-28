@@ -37,13 +37,11 @@ client.on('ready', () => {
 function buildDraftComponents(items) {
   const rows = [];
   let currentRow = new ActionRowBuilder();
-  const itemsStr = items.join(',');
 
+  // ① 各アイテムの削除ボタン（ボタン内にはインデックス番号のみ保持して100文字制限を回避）
   items.slice(0, 20).forEach((itemName, index) => {
-    const customId = `df_rm_${index}_${itemsStr}`;
-
     const button = new ButtonBuilder()
-      .setCustomId(customId.substring(0, 100))
+      .setCustomId(`df_rm_${index}`)
       .setLabel(`❌ ${itemName}`)
       .setStyle(ButtonStyle.Secondary);
 
@@ -55,9 +53,9 @@ function buildDraftComponents(items) {
     }
   });
 
-  const confirmCustomId = `df_cfm_${itemsStr}`.substring(0, 100);
+  // ② 確定・キャンセルボタン
   const confirmButton = new ButtonBuilder()
-    .setCustomId(confirmCustomId)
+    .setCustomId('df_confirm')
     .setLabel('✅ 決定してリストに追加')
     .setStyle(ButtonStyle.Success);
 
@@ -116,6 +114,13 @@ function buildCurrentListComponents(items) {
   return rows;
 }
 
+// メッセージ本文から「・**品名**」のリストを抽出するヘルパー関数
+function parseItemsFromContent(content) {
+  const matches = content.match(/・\*\*(.*?)\*\*/g);
+  if (!matches) return [];
+  return matches.map(m => m.replace(/・\*\*|\*\*/g, '').trim());
+}
+
 // チャットメッセージの処理
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
@@ -153,7 +158,7 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【3】AI候補プレビュー表示（isCurrentList: false）
+    // 【3】AI候補プレビュー表示
     if (json.items && json.items.length > 0 && json.isCurrentList === false) {
       const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
@@ -188,14 +193,13 @@ client.on('interactionCreate', async (interaction) => {
 
     // 個別除外
     if (customId.startsWith('df_rm_')) {
-      const parts = customId.split('_');
-      const removeIndex = parseInt(parts[2], 10);
-      const itemsStr = parts.slice(3).join('_');
-      let items = itemsStr ? itemsStr.split(',') : [];
+      const removeIndex = parseInt(customId.replace('df_rm_', ''), 10);
+      
+      // 現在のメッセージ本文から候補一覧を解析
+      let currentItems = parseItemsFromContent(interaction.message.content);
+      currentItems.splice(removeIndex, 1);
 
-      items.splice(removeIndex, 1);
-
-      if (items.length === 0) {
+      if (currentItems.length === 0) {
         await interaction.update({
           content: '❌ 追加候補がすべて除外されたため、追加をキャンセルしました。',
           components: []
@@ -203,23 +207,28 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const itemsListText = items.map(i => `・**${i}**`).join('\n');
+      const itemsListText = currentItems.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
-      const components = buildDraftComponents(items);
+      const components = buildDraftComponents(currentItems);
 
       await interaction.update({ content: contentText, components: components });
       return;
     }
 
-    // 決定して一括追加（追加後に最新リストを消去用ボタン付きで表示！）
-    if (customId.startsWith('df_cfm_')) {
+    // 決定して一括追加（そのまま全追加もOK）
+    if (customId === 'df_confirm') {
       await interaction.deferUpdate();
 
-      const itemsStr = customId.replace('df_cfm_', '');
-      const items = itemsStr ? itemsStr.split(',') : [];
+      // メッセージ本文から全アイテムをパース（削っていない場合も含む）
+      const currentItems = parseItemsFromContent(interaction.message.content);
+
+      if (currentItems.length === 0) {
+        await interaction.followUp({ content: '⚠️ 追加するアイテムがありません。', ephemeral: true });
+        return;
+      }
 
       try {
-        const finalItemsText = items.join(', ');
+        const finalItemsText = currentItems.join(', ');
         
         const response = await fetch(GAS_URL, {
           method: 'POST',
@@ -231,8 +240,6 @@ client.on('interactionCreate', async (interaction) => {
         });
 
         const json = await response.json();
-
-        // 削除ボタン付きの最新リストコンポーネントを生成
         const components = buildCurrentListComponents(json.items);
 
         await interaction.editReply({
@@ -274,7 +281,6 @@ client.on('interactionCreate', async (interaction) => {
 
     const json = await response.json();
 
-    // 削除後も最新リストと消去ボタンを維持して更新・返信
     if (json.items) {
       const components = buildCurrentListComponents(json.items);
       await interaction.followUp({ content: json.reply, components: components });
