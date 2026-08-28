@@ -29,7 +29,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GAS_URL = process.env.GAS_URL;
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID;
 
-// 未確定の追加候補セッションを保持するメモリマップ (messageId -> Array of items)
+// 未確定の追加候補セッションを保持するメモリマップ
 const draftSessions = new Map();
 
 client.on('ready', () => {
@@ -41,7 +41,7 @@ function buildDraftComponents(items) {
   const rows = [];
   let currentRow = new ActionRowBuilder();
 
-  // ① 削除用ボタン (最大20個まで)
+  // ① 削除用ボタン
   items.slice(0, 20).forEach((itemName, index) => {
     const button = new ButtonBuilder()
       .setCustomId(`draft_remove_${index}`)
@@ -101,7 +101,7 @@ client.on('messageCreate', async (message) => {
 
     const json = await response.json();
 
-    // 【1】「リスト」取得時のレスポンス（既存機能: チェック削除 & 全削除ボタン）
+    // 【1】「リスト」取得時のレスポンス（チェック削除 & 全削除ボタン）
     if (userText === "リスト" && json.items) {
       if (json.items.length === 0) {
         await message.reply(json.reply);
@@ -143,24 +143,22 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【2】「全削除」「個別の削除」などの直接処理
-    if (userText === "全削除" || userText === "全部買った" || !json.items) {
+    // 【2】「全削除」などのコマンド実行時
+    if (userText === "全削除" || userText === "全部買った" || userText.includes("すべてを消したい")) {
       if (json.reply) {
         await message.reply(json.reply);
       }
       return;
     }
 
-    // 【3】AIによる複数具材の抽出候補プレビュー（新機能）
+    // 【3】AIによる追加候補プレビュー（ボタン付き）
     if (json.items && json.items.length > 0) {
-      // 1つの具材だけの場合はそのまま確定して登録してもOKだが、一貫してプレビューを出す
       const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
 
       const components = buildDraftComponents(json.items);
       const sentMessage = await message.reply({ content: contentText, components: components });
 
-      // メッセージIDをキーにして候補アイテム配列をメモリに保持
       draftSessions.set(sentMessage.id, json.items);
     }
 
@@ -177,9 +175,7 @@ client.on('interactionCreate', async (interaction) => {
   const customId = interaction.customId;
   const messageId = interaction.message.id;
 
-  // ----------------------------------------------------
-  // A. 候補編集のボタン処理 (draft_...)
-  // ----------------------------------------------------
+  // A. 候補編集のボタン処理
   if (customId.startsWith('draft_')) {
     const items = draftSessions.get(messageId);
 
@@ -188,11 +184,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // A-1. 個別アイテムの除外ボタンを押した場合
+    // 個別除外
     if (customId.startsWith('draft_remove_')) {
       const removeIndex = parseInt(customId.replace('draft_remove_', ''), 10);
-      
-      // 対象インデックスの具材を削除
       items.splice(removeIndex, 1);
       draftSessions.set(messageId, items);
 
@@ -205,7 +199,6 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // UIを更新
       const itemsListText = items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
       const components = buildDraftComponents(items);
@@ -214,7 +207,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // A-2. 「キャンセル」ボタンを押した場合
+    // キャンセル
     if (customId === 'draft_cancel') {
       draftSessions.delete(messageId);
       await interaction.update({
@@ -224,24 +217,22 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // A-3. 「決定してリストに追加」ボタンを押した場合
+    // 決定して一括追加
     if (customId === 'draft_confirm') {
       await interaction.deferUpdate();
 
       try {
-        // 残った全アイテムをカンマ区切りテキストとしてGASへ一括送信
         const finalItemsText = items.join(', ');
         
-        const response = await fetch(GAS_URL, {
+        await fetch(GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: finalItemsText,
-            username: interaction.user.username
+            action: "confirm_add"
           })
         });
 
-        const json = await response.json();
         draftSessions.delete(messageId);
 
         const addedListText = items.map(i => `・**${i}**`).join('\n');
@@ -257,9 +248,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // ----------------------------------------------------
-  // B. 既存機能のボタン処理 (delete_... / clear_all)
-  // ----------------------------------------------------
+  // B. リスト個別削除 / 全削除
   await interaction.deferUpdate();
 
   let sendText = "";
