@@ -33,11 +33,13 @@ client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
 });
 
-// 追加候補（ドラフト）ボタン作成用
+// 追加候補（ドラフト）ボタン作成用（安全上限設定）
 function buildDraftComponents(items) {
+  if (!Array.isArray(items)) return [];
   const rows = [];
   let currentRow = new ActionRowBuilder();
 
+  // Discordの制限上上限20個まで
   items.slice(0, 20).forEach((itemName, index) => {
     const button = new ButtonBuilder()
       .setCustomId(`df_rm_${index}`)
@@ -67,23 +69,26 @@ function buildDraftComponents(items) {
     rows.push(currentRow);
   } else {
     if (currentRow.components.length > 0) rows.push(currentRow);
-    const actionRow = new ActionRowBuilder().addComponents(confirmButton, cancelButton);
-    rows.push(actionRow);
+    if (rows.length < 5) {
+      rows.push(new ActionRowBuilder().addComponents(confirmButton, cancelButton));
+    }
   }
 
-  return rows;
+  return rows.slice(0, 5); // 最大5行まで
 }
 
-// チェック消去用のボタン作成用（現在のリスト用）
+// チェック消去用のボタン作成用（現在のリスト用：安全ガード）
 function buildCurrentListComponents(items) {
-  if (!items || items.length === 0) return [];
+  if (!Array.isArray(items) || items.length === 0) return [];
 
   const rows = [];
-  const displayItems = items.slice(0, 15);
+  const displayItems = items.slice(0, 12); // ボタン溢れ防止のため上限数を12個に調整
 
   displayItems.forEach((itemName, index) => {
     const hasMultiple = itemName.includes('(x');
     const cleanName = itemName.replace(/\s*\(x.+?\)/, '').trim();
+
+    if (rows.length >= 4) return; // 下限行確保のため
 
     if (hasMultiple) {
       const row = new ActionRowBuilder().addComponents(
@@ -117,11 +122,12 @@ function buildCurrentListComponents(items) {
     rows.push(new ActionRowBuilder().addComponents(clearAllButton));
   }
 
-  return rows;
+  return rows.slice(0, 5);
 }
 
 // メッセージ本文から「・」で始まる行のアイテム名をパースする関数
 function parseItemsFromContent(content) {
+  if (!content) return [];
   const lines = content.split('\n');
   const items = [];
 
@@ -171,11 +177,12 @@ client.on('messageCreate', async (message) => {
 
     // 【2】リスト表示
     if (json.isCurrentList) {
-      const components = buildCurrentListComponents(json.items || []);
+      const items = Array.isArray(json.items) ? json.items : [];
+      const components = buildCurrentListComponents(items);
       let listContent = json.reply || "🛒 **現在の買い物リスト:**";
       
-      if (json.items && json.items.length > 0) {
-        const listText = json.items.map(i => `・**${i}**`).join('\n');
+      if (items.length > 0) {
+        const listText = items.map(i => `・**${i}**`).join('\n');
         listContent = `${listContent}\n\n${listText}`;
       }
 
@@ -185,10 +192,11 @@ client.on('messageCreate', async (message) => {
 
     // 【3】追加候補表示
     if (json.items && json.items.length > 0 && json.isCurrentList === false) {
-      const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
+      const items = Array.isArray(json.items) ? json.items : [];
+      const itemsListText = items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
 
-      const components = buildDraftComponents(json.items);
+      const components = buildDraftComponents(items);
       await message.reply({ content: contentText, components: components });
     }
 
@@ -198,13 +206,13 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// ボタンクリックの処理
+// ボタンクリックの処理（安定版：単一レスポンス完結構造）
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
   const customId = interaction.customId;
 
-  // A. 全削除の確認ダイアログ表示
+  // 1. 全削除確認
   if (customId === 'clear_all_confirm' || customId === 'clear_all') {
     const confirmRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('clear_all_execute').setLabel('🔴 はい（全削除）').setStyle(ButtonStyle.Danger),
@@ -217,9 +225,9 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // B. 全削除の実行
+  // 2. 全削除実行
   if (customId === 'clear_all_execute') {
-    await interaction.update({ content: '⏳ **全削除中...**', components: [] });
+    await interaction.deferUpdate();
     try {
       const response = await fetch(GAS_URL, {
         method: 'POST',
@@ -227,14 +235,14 @@ client.on('interactionCreate', async (interaction) => {
         body: JSON.stringify({ text: "全削除_実行", action: "clear_all_execute" })
       });
       const json = await response.json();
-      await interaction.followUp({ content: json.reply || '🧹 **リストを全削除しました！**' });
+      await interaction.editReply({ content: json.reply || '🧹 **リストを全削除しました！**', components: [] });
     } catch (e) {
-      await interaction.followUp({ content: '⚠️ 全削除処理に失敗しました。' });
+      await interaction.editReply({ content: '⚠️ 全削除処理に失敗しました。', components: [] });
     }
     return;
   }
 
-  // C. 候補編集・確定のボタン処理
+  // 3. 追加ドラフト操作（キャンセル・個削除・確定）
   if (customId.startsWith('df_')) {
     if (customId === 'df_cancel') {
       await interaction.update({
@@ -266,17 +274,15 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (customId === 'df_confirm') {
-      await interaction.update({
-        content: interaction.message.content + '\n\n⏳ **スプレッドシートに追加中...**',
-        components: []
-      });
-
       const currentItems = parseItemsFromContent(interaction.message.content);
 
       if (currentItems.length === 0) {
-        await interaction.followUp({ content: '⚠️ 追加するアイテムが見つかりませんでした。' });
+        await interaction.update({ content: '⚠️ 追加するアイテムが見つかりませんでした。', components: [] });
         return;
       }
+
+      // deferUpdate で Discord のレスポンス待機状態を作成
+      await interaction.deferUpdate();
 
       try {
         const finalItemsText = currentItems.join(', ');
@@ -291,39 +297,35 @@ client.on('interactionCreate', async (interaction) => {
         });
 
         const json = await response.json();
-        const components = buildCurrentListComponents(json.items || []);
+        const items = Array.isArray(json.items) ? json.items : [];
+        const components = buildCurrentListComponents(items);
 
         let listContent = json.reply || "✅ **アイテムをリストに追加しました！**";
-        if (json.items && json.items.length > 0) {
-          const listText = json.items.map(i => `・**${i}**`).join('\n');
+        if (items.length > 0) {
+          const listText = items.map(i => `・**${i}**`).join('\n');
           listContent = `${listContent}\n\n${listText}`;
         }
 
-        await interaction.followUp({ content: listContent, components: components });
+        await interaction.editReply({ content: listContent, components: components });
       } catch (error) {
         console.error('確定保存エラー:', error);
-        await interaction.followUp({ content: '⚠️ リストへの追加処理に失敗しました。' });
+        await interaction.editReply({ content: '⚠️ リストの更新中にエラーが発生しました。', components: [] });
       }
       return;
     }
   }
 
-  // D. リスト個数減算 / 個別完全削除（昔の旧形式IDも含めて抽出互換性を確保）
+  // 4. リスト減算・削除
   if (customId.startsWith('dec_') || customId.startsWith('delete_')) {
-    await interaction.update({
-      content: interaction.message.content + '\n⏳ **更新中...**',
-      components: []
-    });
+    await interaction.deferUpdate();
 
     let sendText = "";
     let actionType = "delete";
 
     if (customId.startsWith('dec_')) {
-      // dec_0_玉ねぎ(x2) または dec_玉ねぎ(x2) から品名を取り出し
       sendText = customId.replace(/^dec_\d+_/, '').replace(/^dec_/, '');
       actionType = "decrement";
     } else {
-      // delete_0_玉ねぎ または delete_玉ねぎ から品名を取り出し
       sendText = customId.replace(/^delete_\d+_/, '').replace(/^delete_/, '');
       actionType = "delete";
     }
@@ -340,19 +342,20 @@ client.on('interactionCreate', async (interaction) => {
       });
 
       const json = await response.json();
-      const components = buildCurrentListComponents(json.items || []);
+      const items = Array.isArray(json.items) ? json.items : [];
+      const components = buildCurrentListComponents(items);
 
       let listContent = json.reply || "✅ **更新しました！**";
-      if (json.items && json.items.length > 0) {
-        const listText = json.items.map(i => `・**${i}**`).join('\n');
+      if (items.length > 0) {
+        const listText = items.map(i => `・**${i}**`).join('\n');
         listContent = `${listContent}\n\n${listText}`;
       }
 
-      await interaction.followUp({ content: listContent, components: components });
+      await interaction.editReply({ content: listContent, components: components });
 
     } catch (error) {
       console.error('ボタン処理エラー:', error);
-      await interaction.followUp({ content: '⚠️ 処理に失敗しました。' });
+      await interaction.editReply({ content: '⚠️ 処理に失敗しました。', components: [] });
     }
   }
 });
