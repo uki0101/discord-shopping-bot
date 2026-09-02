@@ -74,7 +74,7 @@ function buildDraftComponents(items) {
   return rows;
 }
 
-// チェック消去用のボタン作成用（現在のリスト用：インデックス連番化）
+// チェック消去用のボタン作成用（現在のリスト用）
 function buildCurrentListComponents(items) {
   if (!items || items.length === 0) return [];
 
@@ -110,7 +110,7 @@ function buildCurrentListComponents(items) {
 
   if (rows.length < 5) {
     const clearAllButton = new ButtonBuilder()
-      .setCustomId('clear_all')
+      .setCustomId('clear_all_confirm') // 確認画面へ送るIDに変更
       .setLabel('🗑️ リストを全削除')
       .setStyle(ButtonStyle.Danger);
     
@@ -159,26 +159,31 @@ client.on('messageCreate', async (message) => {
 
     const json = await response.json();
 
+    // 【1】「全削除」テキスト入力時は確認ボタンを表示
     if (userText === "全削除" || userText === "全部買った" || userText.includes("すべてを消したい")) {
-      if (json.reply) {
-        await message.reply(json.reply);
-      }
+      const confirmRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('clear_all_execute').setLabel('🔴 はい（全削除）').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('df_cancel').setLabel('✖️ キャンセル').setStyle(ButtonStyle.Secondary)
+      );
+      await message.reply({ content: '⚠️ **本当に買い物リストを全削除しますか？**', components: [confirmRow] });
       return;
     }
 
+    // 【2】リスト表示
     if (json.isCurrentList) {
-      const components = buildCurrentListComponents(json.items);
-      let listContent = json.reply;
+      const components = buildCurrentListComponents(json.items || []);
+      let listContent = json.reply || "🛒 **現在の買い物リスト:**";
       
       if (json.items && json.items.length > 0) {
         const listText = json.items.map(i => `・**${i}**`).join('\n');
-        listContent = `${json.reply}\n\n${listText}`;
+        listContent = `${listContent}\n\n${listText}`;
       }
 
       await message.reply({ content: listContent, components: components });
       return;
     }
 
+    // 【3】追加候補表示
     if (json.items && json.items.length > 0 && json.isCurrentList === false) {
       const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
@@ -199,11 +204,41 @@ client.on('interactionCreate', async (interaction) => {
 
   const customId = interaction.customId;
 
-  // A. 候補編集・確定のボタン処理
+  // A. 全削除の確認フロー
+  if (customId === 'clear_all_confirm') {
+    const confirmRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('clear_all_execute').setLabel('🔴 はい（全削除）').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('df_cancel').setLabel('✖️ キャンセル').setStyle(ButtonStyle.Secondary)
+    );
+    await interaction.update({
+      content: '⚠️ **本当に買い物リストを全削除しますか？**',
+      components: [confirmRow]
+    });
+    return;
+  }
+
+  // B. 全削除の実行
+  if (customId === 'clear_all_execute') {
+    await interaction.update({ content: '⏳ **全削除中...**', components: [] });
+    try {
+      const response = await fetch(GAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: "全削除_実行", action: "clear_all_execute" })
+      });
+      const json = await response.json();
+      await interaction.followUp({ content: json.reply || '🧹 **リストを全削除しました！**' });
+    } catch (e) {
+      await interaction.followUp({ content: '⚠️ 全削除処理に失敗しました。' });
+    }
+    return;
+  }
+
+  // C. 候補編集・確定のボタン処理
   if (customId.startsWith('df_')) {
     if (customId === 'df_cancel') {
       await interaction.update({
-        content: '✖️ 追加をキャンセルしました。',
+        content: '✖️ キャンセルしました。',
         components: []
       });
       return;
@@ -245,7 +280,6 @@ client.on('interactionCreate', async (interaction) => {
 
       try {
         const finalItemsText = currentItems.join(', ');
-        
         const response = await fetch(GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -257,7 +291,7 @@ client.on('interactionCreate', async (interaction) => {
         });
 
         const json = await response.json();
-        const components = buildCurrentListComponents(json.items);
+        const components = buildCurrentListComponents(json.items || []);
 
         let listContent = json.reply || "✅ **アイテムをリストに追加しました！**";
         if (json.items && json.items.length > 0) {
@@ -265,39 +299,17 @@ client.on('interactionCreate', async (interaction) => {
           listContent = `${listContent}\n\n${listText}`;
         }
 
-        await interaction.followUp({
-          content: listContent,
-          components: components
-        });
+        await interaction.followUp({ content: listContent, components: components });
       } catch (error) {
-        console.error('確定保存時の通信エラー:', error);
-        
-        // 通信がタイムアウトした場合でもGAS側の書き込み成功に対応する再取得処理
-        try {
-          const retryRes = await fetch(GAS_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: "リスト" })
-          });
-          const retryJson = await retryRes.json();
-          const components = buildCurrentListComponents(retryJson.items);
-          
-          let listContent = "✅ **アイテムをリストに追加しました！**";
-          if (retryJson.items && retryJson.items.length > 0) {
-            const listText = retryJson.items.map(i => `・**${i}**`).join('\n');
-            listContent = `${listContent}\n\n${listText}`;
-          }
-          await interaction.followUp({ content: listContent, components: components });
-        } catch (retryError) {
-          await interaction.followUp({ content: '⚠️ 追加処理を行いました。最新のリストは「リスト」と入力して確認してください。' });
-        }
+        console.error('確定保存エラー:', error);
+        await interaction.followUp({ content: '⚠️ リストへの追加処理に失敗しました。' });
       }
       return;
     }
   }
 
-  // B. リスト個数減算 / 個別完全削除 / 全削除
-  if (customId.startsWith('dec_') || customId.startsWith('delete_') || customId === 'clear_all') {
+  // D. リスト個数減算 / 個別完全削除
+  if (customId.startsWith('dec_') || customId.startsWith('delete_')) {
     await interaction.update({
       content: interaction.message.content + '\n⏳ **更新中...**',
       components: []
@@ -306,10 +318,7 @@ client.on('interactionCreate', async (interaction) => {
     let sendText = "";
     let actionType = "delete";
 
-    if (customId === 'clear_all') {
-      sendText = "全削除";
-      actionType = undefined;
-    } else if (customId.startsWith('dec_')) {
+    if (customId.startsWith('dec_')) {
       sendText = customId.replace(/^dec_\d+_/, '');
       actionType = "decrement";
     } else {
@@ -329,18 +338,15 @@ client.on('interactionCreate', async (interaction) => {
       });
 
       const json = await response.json();
+      const components = buildCurrentListComponents(json.items || []);
 
-      if (json.items) {
-        const components = buildCurrentListComponents(json.items);
-        let listContent = json.reply;
-        if (json.items.length > 0) {
-          const listText = json.items.map(i => `・**${i}**`).join('\n');
-          listContent = `${json.reply}\n\n${listText}`;
-        }
-        await interaction.followUp({ content: listContent, components: components });
-      } else {
-        await interaction.followUp({ content: json.reply });
+      let listContent = json.reply || "✅ **更新しました！**";
+      if (json.items && json.items.length > 0) {
+        const listText = json.items.map(i => `・**${i}**`).join('\n');
+        listContent = `${listContent}\n\n${listText}`;
       }
+
+      await interaction.followUp({ content: listContent, components: components });
 
     } catch (error) {
       console.error('ボタン処理エラー:', error);
