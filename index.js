@@ -1,4 +1,236 @@
-if (customId === 'df_confirm') {
+const { 
+  Client, 
+  GatewayIntentBits, 
+  ActionRowBuilder, 
+  ButtonBuilder, 
+  ButtonStyle 
+} = require('discord.js');
+const fetch = require('node-fetch');
+const http = require('http');
+
+// Renderのタイムアウト防止用ダミーサーバー
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running!');
+}).listen(PORT, () => {
+  console.log(`Web server running on port ${PORT}`);
+});
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const GAS_URL = process.env.GAS_URL;
+const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID;
+
+client.on('ready', () => {
+  console.log(`Logged in as ${client.user.tag}!`);
+});
+
+// 追加候補（ドラフト）ボタン作成用
+function buildDraftComponents(items) {
+  const rows = [];
+  let currentRow = new ActionRowBuilder();
+
+  items.slice(0, 20).forEach((itemName, index) => {
+    const button = new ButtonBuilder()
+      .setCustomId(`df_rm_${index}`)
+      .setLabel(`❌ ${itemName}`)
+      .setStyle(ButtonStyle.Secondary);
+
+    currentRow.addComponents(button);
+
+    if (currentRow.components.length === 5) {
+      rows.push(currentRow);
+      currentRow = new ActionRowBuilder();
+    }
+  });
+
+  const confirmButton = new ButtonBuilder()
+    .setCustomId('df_confirm')
+    .setLabel('✅ 決定してリストに追加')
+    .setStyle(ButtonStyle.Success);
+
+  const cancelButton = new ButtonBuilder()
+    .setCustomId('df_cancel')
+    .setLabel('✖️ キャンセル')
+    .setStyle(ButtonStyle.Danger);
+
+  if (currentRow.components.length <= 3) {
+    currentRow.addComponents(confirmButton, cancelButton);
+    rows.push(currentRow);
+  } else {
+    if (currentRow.components.length > 0) rows.push(currentRow);
+    const actionRow = new ActionRowBuilder().addComponents(confirmButton, cancelButton);
+    rows.push(actionRow);
+  }
+
+  return rows;
+}
+
+// チェック消去用のボタン作成用（現在のリスト用：インデックス連番化）
+function buildCurrentListComponents(items) {
+  if (!items || items.length === 0) return [];
+
+  const rows = [];
+  const displayItems = items.slice(0, 15);
+
+  displayItems.forEach((itemName, index) => {
+    const hasMultiple = itemName.includes('(x');
+    const cleanName = itemName.replace(/\s*\(x.+?\)/, '').trim();
+
+    if (hasMultiple) {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`dec_${index}_${itemName}`)
+          .setLabel(`🔽 1つ買った: ${itemName}`)
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`delete_${index}_${cleanName}`)
+          .setLabel(`🧹 すべて買った`)
+          .setStyle(ButtonStyle.Secondary)
+      );
+      rows.push(row);
+    } else {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`delete_${index}_${cleanName}`)
+          .setLabel(`✔️ ${cleanName}`)
+          .setStyle(ButtonStyle.Success)
+      );
+      rows.push(row);
+    }
+  });
+
+  if (rows.length < 5) {
+    const clearAllButton = new ButtonBuilder()
+      .setCustomId('clear_all')
+      .setLabel('🗑️ リストを全削除')
+      .setStyle(ButtonStyle.Danger);
+    
+    rows.push(new ActionRowBuilder().addComponents(clearAllButton));
+  }
+
+  return rows;
+}
+
+// メッセージ本文から「・」で始まる行のアイテム名をパースする関数
+function parseItemsFromContent(content) {
+  const lines = content.split('\n');
+  const items = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('・')) {
+      const cleanName = trimmed.replace(/^・\s*/, '').replace(/\*\*/g, '').trim();
+      if (cleanName) {
+        items.push(cleanName);
+      }
+    }
+  }
+  return items;
+}
+
+// チャットメッセージの処理
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (ALLOWED_CHANNEL_ID && message.channel.id !== ALLOWED_CHANNEL_ID) return;
+
+  const userText = message.content.trim();
+  if (!userText) return;
+
+  await message.channel.sendTyping();
+
+  try {
+    const response = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: userText,
+        username: message.author.displayName || message.author.username
+      })
+    });
+
+    const json = await response.json();
+
+    if (userText === "全削除" || userText === "全部買った" || userText.includes("すべてを消したい")) {
+      if (json.reply) {
+        await message.reply(json.reply);
+      }
+      return;
+    }
+
+    if (json.isCurrentList) {
+      const components = buildCurrentListComponents(json.items);
+      let listContent = json.reply;
+      
+      if (json.items && json.items.length > 0) {
+        const listText = json.items.map(i => `・**${i}**`).join('\n');
+        listContent = `${json.reply}\n\n${listText}`;
+      }
+
+      await message.reply({ content: listContent, components: components });
+      return;
+    }
+
+    if (json.items && json.items.length > 0 && json.isCurrentList === false) {
+      const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
+      const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
+
+      const components = buildDraftComponents(json.items);
+      await message.reply({ content: contentText, components: components });
+    }
+
+  } catch (error) {
+    console.error('GAS呼び出しエラー:', error);
+    await message.reply('⚠️ 処理中にエラーが発生しました。');
+  }
+});
+
+// ボタンクリックの処理
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  const customId = interaction.customId;
+
+  // A. 候補編集・確定のボタン処理
+  if (customId.startsWith('df_')) {
+    if (customId === 'df_cancel') {
+      await interaction.update({
+        content: '✖️ 追加をキャンセルしました。',
+        components: []
+      });
+      return;
+    }
+
+    if (customId.startsWith('df_rm_')) {
+      const removeIndex = parseInt(customId.replace('df_rm_', ''), 10);
+      let currentItems = parseItemsFromContent(interaction.message.content);
+      currentItems.splice(removeIndex, 1);
+
+      if (currentItems.length === 0) {
+        await interaction.update({
+          content: '❌ 追加候補がすべて除外されたため、追加をキャンセルしました。',
+          components: []
+        });
+        return;
+      }
+
+      const itemsListText = currentItems.map(i => `・**${i}**`).join('\n');
+      const contentText = `💡 **追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
+      const components = buildDraftComponents(currentItems);
+
+      await interaction.update({ content: contentText, components: components });
+      return;
+    }
+
+    if (customId === 'df_confirm') {
       await interaction.update({
         content: interaction.message.content + '\n\n⏳ **スプレッドシートに追加中...**',
         components: []
@@ -14,7 +246,6 @@ if (customId === 'df_confirm') {
       try {
         const finalItemsText = currentItems.join(', ');
         
-        // タイムアウト設定を無効化（GASの応答をしっかり待つ）
         const response = await fetch(GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -41,12 +272,12 @@ if (customId === 'df_confirm') {
       } catch (error) {
         console.error('確定保存時の通信エラー:', error);
         
-        // 通信がタイムアウトしてもGAS側で保存できている可能性が高いため、最新リストの取得を試みる
+        // 通信がタイムアウトした場合でもGAS側の書き込み成功に対応する再取得処理
         try {
           const retryRes = await fetch(GAS_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: "リスト", action: undefined })
+            body: JSON.stringify({ text: "リスト" })
           });
           const retryJson = await retryRes.json();
           const components = buildCurrentListComponents(retryJson.items);
@@ -58,8 +289,64 @@ if (customId === 'df_confirm') {
           }
           await interaction.followUp({ content: listContent, components: components });
         } catch (retryError) {
-          await interaction.followUp({ content: '⚠️ 処理に少し時間がかかりました。最新のリストは「リスト」と送信して確認してください。' });
+          await interaction.followUp({ content: '⚠️ 追加処理を行いました。最新のリストは「リスト」と入力して確認してください。' });
         }
       }
       return;
     }
+  }
+
+  // B. リスト個数減算 / 個別完全削除 / 全削除
+  if (customId.startsWith('dec_') || customId.startsWith('delete_') || customId === 'clear_all') {
+    await interaction.update({
+      content: interaction.message.content + '\n⏳ **更新中...**',
+      components: []
+    });
+
+    let sendText = "";
+    let actionType = "delete";
+
+    if (customId === 'clear_all') {
+      sendText = "全削除";
+      actionType = undefined;
+    } else if (customId.startsWith('dec_')) {
+      sendText = customId.replace(/^dec_\d+_/, '');
+      actionType = "decrement";
+    } else {
+      sendText = customId.replace(/^delete_\d+_/, '');
+      actionType = "delete";
+    }
+
+    try {
+      const response = await fetch(GAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: sendText,
+          action: actionType,
+          username: interaction.user.displayName || interaction.user.username
+        })
+      });
+
+      const json = await response.json();
+
+      if (json.items) {
+        const components = buildCurrentListComponents(json.items);
+        let listContent = json.reply;
+        if (json.items.length > 0) {
+          const listText = json.items.map(i => `・**${i}**`).join('\n');
+          listContent = `${json.reply}\n\n${listText}`;
+        }
+        await interaction.followUp({ content: listContent, components: components });
+      } else {
+        await interaction.followUp({ content: json.reply });
+      }
+
+    } catch (error) {
+      console.error('ボタン処理エラー:', error);
+      await interaction.followUp({ content: '⚠️ 処理に失敗しました。' });
+    }
+  }
+});
+
+client.login(DISCORD_TOKEN);
