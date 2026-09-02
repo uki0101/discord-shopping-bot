@@ -86,7 +86,6 @@ function buildCurrentListComponents(items) {
     const cleanName = itemName.replace(/\s*\(x.+?\)/, '').trim();
 
     if (hasMultiple) {
-      // 重複エラーを防ぐため index_アイテム名 の形式でIDを生成
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`dec_${index}_${itemName}`)
@@ -194,7 +193,7 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// ボタンクリックの処理
+// ボタンクリックの処理（タイムアウト回避改修版）
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
 
@@ -232,6 +231,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (customId === 'df_confirm') {
+      // 即座に更新表示（タイムアウトタイマー解除）
       await interaction.update({
         content: interaction.message.content + '\n\n⏳ **スプレッドシートに追加中...**',
         components: []
@@ -247,6 +247,7 @@ client.on('interactionCreate', async (interaction) => {
       try {
         const finalItemsText = currentItems.join(', ');
         
+        // 時間がかかっても裏側で処理を完遂
         const response = await fetch(GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -271,7 +272,7 @@ client.on('interactionCreate', async (interaction) => {
         });
       } catch (error) {
         console.error('確定保存エラー:', error);
-        await interaction.followUp({ content: '⚠️ リストへの追加に失敗しました。' });
+        await interaction.followUp({ content: '⚠️ リストへの追加処理に失敗しました。' });
       }
       return;
     }
@@ -279,6 +280,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // B. リスト個数減算 / 個別完全削除 / 全削除
   if (customId.startsWith('dec_') || customId.startsWith('delete_') || customId === 'clear_all') {
+    // 即座に更新表示（タイムアウトタイマー解除）
     await interaction.update({
       content: interaction.message.content + '\n⏳ **更新中...**',
       components: []
@@ -291,11 +293,9 @@ client.on('interactionCreate', async (interaction) => {
       sendText = "全削除";
       actionType = undefined;
     } else if (customId.startsWith('dec_')) {
-      // `dec_インデックス_アイテム名` からアイテム名を取り出す
       sendText = customId.replace(/^dec_\d+_/, '');
       actionType = "decrement";
     } else {
-      // `delete_インデックス_アイテム名` からアイテム名を取り出す
       sendText = customId.replace(/^delete_\d+_/, '');
       actionType = "delete";
     }
