@@ -143,9 +143,9 @@ function buildCurrentListComponents(items) {
   return rows.slice(0, 5);
 }
 
-// メッセージ本文から「・」で始まる行のアイテム名をパースする関数
+// メッセージ本文から「・」で始まる候補行をパースする関数（※「💡 追加候補:」があるメッセージのみ対象）
 function parseItemsFromContent(content) {
-  if (!content) return [];
+  if (!content || !content.includes('追加候補')) return [];
   const lines = content.split('\n');
   const items = [];
 
@@ -208,14 +208,20 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【3】追加候補表示
+    // 【3】追加候補表示（アイテムがある場合のみボタン付きで送信）
     if (json.items && json.items.length > 0 && json.isCurrentList === false) {
       const items = Array.isArray(json.items) ? json.items : [];
       const itemsListText = items.map(i => `・**${i}**`).join('\n');
-      const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
+      const contentText = `💡 **「${userText.split('\n')[0]}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
 
       const components = buildDraftComponents(items);
       await message.reply({ content: contentText, components: components });
+      return;
+    }
+
+    // 【4】ヘルプや一般応答など（items が空の場合のメッセージ返信）
+    if (json.reply) {
+      await message.reply({ content: json.reply, components: [] });
     }
 
   } catch (error) {
@@ -302,7 +308,6 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferUpdate();
 
       try {
-        // GASへ配列表記のまま直接送信（合体防止）
         const response = await fetch(GAS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
