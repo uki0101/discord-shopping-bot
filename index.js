@@ -74,37 +74,34 @@ function buildDraftComponents(items) {
   return rows;
 }
 
-// チェック消去用のボタン作成用（現在のリスト用：案1対応版）
+// チェック消去用のボタン作成用（重複防止：インデックス連番化）
 function buildCurrentListComponents(items) {
   if (!items || items.length === 0) return [];
 
   const rows = [];
-
-  // Discordの制限（1メッセージ最大5行まで）に対応するため最大アイテム数を調整
   const displayItems = items.slice(0, 15);
 
-  displayItems.forEach((itemName) => {
-    const hasMultiple = itemName.includes('(x'); // 個数が複数あるかチェック
+  displayItems.forEach((itemName, index) => {
+    const hasMultiple = itemName.includes('(x');
     const cleanName = itemName.replace(/\s*\(x.+?\)/, '').trim();
 
     if (hasMultiple) {
-      // 複数個ある場合は「1つ買ってみる」と「全消去」の2つのボタンを同じ行に配置
+      // 重複エラーを防ぐため index_アイテム名 の形式でIDを生成
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`dec_${itemName}`)
+          .setCustomId(`dec_${index}_${itemName}`)
           .setLabel(`🔽 1つ買った: ${itemName}`)
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
-          .setCustomId(`delete_${cleanName}`)
+          .setCustomId(`delete_${index}_${cleanName}`)
           .setLabel(`🧹 すべて買った`)
           .setStyle(ButtonStyle.Secondary)
       );
       rows.push(row);
     } else {
-      // 単品の場合はそのまま消化ボタンを表示
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`delete_${cleanName}`)
+          .setCustomId(`delete_${index}_${cleanName}`)
           .setLabel(`✔️ ${cleanName}`)
           .setStyle(ButtonStyle.Success)
       );
@@ -112,7 +109,6 @@ function buildCurrentListComponents(items) {
     }
   });
 
-  // 全削除ボタンの追加（行数に余裕があれば配置）
   if (rows.length < 5) {
     const clearAllButton = new ButtonBuilder()
       .setCustomId('clear_all')
@@ -164,7 +160,6 @@ client.on('messageCreate', async (message) => {
 
     const json = await response.json();
 
-    // 【1】「全削除」コマンド実行時
     if (userText === "全削除" || userText === "全部買った" || userText.includes("すべてを消したい")) {
       if (json.reply) {
         await message.reply(json.reply);
@@ -172,7 +167,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【2】GASから「現在のリスト（isCurrentList: true）」が返ってきた場合
     if (json.isCurrentList) {
       const components = buildCurrentListComponents(json.items);
       let listContent = json.reply;
@@ -186,7 +180,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // 【3】AI候補プレビュー表示（isCurrentList: false）
     if (json.items && json.items.length > 0 && json.isCurrentList === false) {
       const itemsListText = json.items.map(i => `・**${i}**`).join('\n');
       const contentText = `💡 **「${userText}」の追加候補:**\n不要なアイテムはタップして除外してください。\n\n${itemsListText}`;
@@ -209,8 +202,6 @@ client.on('interactionCreate', async (interaction) => {
 
   // A. 候補編集・確定のボタン処理
   if (customId.startsWith('df_')) {
-    
-    // A-1. キャンセル
     if (customId === 'df_cancel') {
       await interaction.update({
         content: '✖️ 追加をキャンセルしました。',
@@ -219,10 +210,8 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // A-2. 個別除外
     if (customId.startsWith('df_rm_')) {
       const removeIndex = parseInt(customId.replace('df_rm_', ''), 10);
-      
       let currentItems = parseItemsFromContent(interaction.message.content);
       currentItems.splice(removeIndex, 1);
 
@@ -242,7 +231,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // A-3. 決定して一括追加
     if (customId === 'df_confirm') {
       await interaction.update({
         content: interaction.message.content + '\n\n⏳ **スプレッドシートに追加中...**',
@@ -303,11 +291,13 @@ client.on('interactionCreate', async (interaction) => {
       sendText = "全削除";
       actionType = undefined;
     } else if (customId.startsWith('dec_')) {
-      sendText = customId.replace('dec_', '');
-      actionType = "decrement"; // 1つ減らすアクション
+      // `dec_インデックス_アイテム名` からアイテム名を取り出す
+      sendText = customId.replace(/^dec_\d+_/, '');
+      actionType = "decrement";
     } else {
-      sendText = customId.replace('delete_', '');
-      actionType = "delete"; // 完全削除アクション
+      // `delete_インデックス_アイテム名` からアイテム名を取り出す
+      sendText = customId.replace(/^delete_\d+_/, '');
+      actionType = "delete";
     }
 
     try {
