@@ -110,7 +110,7 @@ function buildCurrentListComponents(items) {
 
   if (rows.length < 5) {
     const clearAllButton = new ButtonBuilder()
-      .setCustomId('clear_all_confirm') // 確認画面へ送るIDに変更
+      .setCustomId('clear_all_confirm')
       .setLabel('🗑️ リストを全削除')
       .setStyle(ButtonStyle.Danger);
     
@@ -159,7 +159,7 @@ client.on('messageCreate', async (message) => {
 
     const json = await response.json();
 
-    // 【1】「全削除」テキスト入力時は確認ボタンを表示
+    // 【1】「全削除」テキスト入力時
     if (userText === "全削除" || userText === "全部買った" || userText.includes("すべてを消したい")) {
       const confirmRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('clear_all_execute').setLabel('🔴 はい（全削除）').setStyle(ButtonStyle.Danger),
@@ -204,8 +204,8 @@ client.on('interactionCreate', async (interaction) => {
 
   const customId = interaction.customId;
 
-  // A. 全削除の確認フロー
-  if (customId === 'clear_all_confirm') {
+  // A. 全削除の確認ダイアログ表示
+  if (customId === 'clear_all_confirm' || customId === 'clear_all') {
     const confirmRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('clear_all_execute').setLabel('🔴 はい（全削除）').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('df_cancel').setLabel('✖️ キャンセル').setStyle(ButtonStyle.Secondary)
@@ -308,7 +308,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // D. リスト個数減算 / 個別完全削除
+  // D. リスト個数減算 / 個別完全削除（昔の旧形式IDも含めて抽出互換性を確保）
   if (customId.startsWith('dec_') || customId.startsWith('delete_')) {
     await interaction.update({
       content: interaction.message.content + '\n⏳ **更新中...**',
@@ -319,10 +319,12 @@ client.on('interactionCreate', async (interaction) => {
     let actionType = "delete";
 
     if (customId.startsWith('dec_')) {
-      sendText = customId.replace(/^dec_\d+_/, '');
+      // dec_0_玉ねぎ(x2) または dec_玉ねぎ(x2) から品名を取り出し
+      sendText = customId.replace(/^dec_\d+_/, '').replace(/^dec_/, '');
       actionType = "decrement";
     } else {
-      sendText = customId.replace(/^delete_\d+_/, '');
+      // delete_0_玉ねぎ または delete_玉ねぎ から品名を取り出し
+      sendText = customId.replace(/^delete_\d+_/, '').replace(/^delete_/, '');
       actionType = "delete";
     }
 
